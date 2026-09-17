@@ -136,7 +136,7 @@ class ChartCard(ctk.CTkFrame):
 class HealthTrackerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Health Tracker")
+        self.title("Pulser")
         self.geometry("1150x760")
         self.minsize(940, 640)
 
@@ -157,7 +157,7 @@ class HealthTrackerApp(ctk.CTk):
         sidebar.grid_propagate(False)
         
         ctk.CTkLabel(
-            sidebar, text="Health Tracker", font=ctk.CTkFont(size=21, weight="bold"),
+            sidebar, text="Pulser", font=ctk.CTkFont(size=21, weight="bold"),
         ).grid(row=0, column=0, padx=(20, 0), pady=(22, 0), sticky="w")
 
         self.appearance_switch = ctk.CTkSwitch(

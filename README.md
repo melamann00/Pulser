@@ -1,6 +1,6 @@
-# Pulser
+# Pulser - personal health tracker
 
-Pulser is a lightweight desktop app for logging your heart rate and pulse and watching them change over time — with color-coded reference zones and a dark interface by default.
+Pulser is a lightweight personal desktop app for logging your heart rate and pulse and watching them change over time — with color-coded reference zones and a dark interface by default. No notifications, no AI, no paywalls.
 
 ![Pulser screenshot](screenshot.png)
 

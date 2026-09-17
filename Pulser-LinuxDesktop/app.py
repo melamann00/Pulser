@@ -16,21 +16,23 @@ ROW_COLOR = ("#f2f2f2", "#2b2b2b")
 ROW_HOVER = ("#e3e3e3", "#3a3a3a")
 MUTED_TEXT = ("#8a8a8a", "#9a9a9a")
 
-ZONE_GOOD = "#43a047"# green - normal/good
-ZONE_MID = "#fb8c00"# orange - borderline
-ZONE_BAD = "#e53935"# red - too low / too high
+ZONE_GOOD = "#43a047"  # green - normal/good
+ZONE_MID = "#fb8c00"  # orange - borderline
+ZONE_BAD = "#e53935"  # red - too low / too high
 
 ZONE_BOUNDS = [
-    (0, 50, ZONE_BAD),# too low
-    (50, 60, ZONE_MID),# borderline low
-    (60, 100, ZONE_GOOD),# normal resting range
-    (100, 120, ZONE_MID),# borderline high
-    (120, 300, ZONE_BAD),# too high
+    (0, 50, ZONE_BAD),  # too low
+    (50, 60, ZONE_MID),  # borderline low
+    (60, 100, ZONE_GOOD),  # normal resting range
+    (100, 120, ZONE_MID),  # borderline high
+    (120, 300, ZONE_BAD),  # too high
 ]
 
-DEFAULT_Y_MIN = 30 # visible axis floor when nothing pushes it wider
-DEFAULT_Y_MAX = 150 # visible axis ceiling when nothing pushes it wider
-Y_PADDING = 10 # extra bpm of headroom shown above/below actual readings
+DEFAULT_Y_MIN = 30  # visible axis floor when nothing pushes it wider
+DEFAULT_Y_MAX = 150  # visible axis ceiling when nothing pushes it wider
+Y_PADDING = 10  # extra bpm of headroom shown above/below actual readings
+HOVER_RADIUS_PX = 18  # how close (in pixels) the cursor must be to a point to show its tooltip
+
 
 class ChartCard(ctk.CTkFrame):
     def __init__(self, master, title: str, line_color: str, unit: str = "bpm",
@@ -41,6 +43,7 @@ class ChartCard(ctk.CTkFrame):
         self.is_dark = is_dark
         self._timestamps: list = []
         self._values: list = []
+        self._hover_idx = None
         ctk.CTkLabel(
             self, text=title, font=ctk.CTkFont(size=16, weight="bold"), anchor="w"
         ).pack(fill="x", padx=18, pady=(14, 4))
@@ -50,6 +53,8 @@ class ChartCard(ctk.CTkFrame):
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=14, pady=(0, 16))
         self.canvas.get_tk_widget().configure(highlightthickness=0, bd=0)
         self.canvas.get_tk_widget().bind("<Configure>", lambda e: self._redraw(), add="+")
+        self.canvas.mpl_connect("motion_notify_event", self._on_hover)
+        self.canvas.mpl_connect("figure_leave_event", lambda _e: self._hide_tooltip())
         self._redraw()
 
     def _palette(self) -> dict:
@@ -127,11 +132,63 @@ class ChartCard(ctk.CTkFrame):
         self.axis.set_ylim(*ylim)
         self._draw_zones(ylim, c["zone_alpha"])
 
+        # axis.clear() above drops the old annotation, so rebuild it (hidden) every redraw
+        self._hover_idx = None
+        self._tooltip = self.axis.annotate(
+            "", xy=(0, 0), xytext=(12, 12), textcoords="offset points",
+            fontsize=9, color=c["text"], zorder=10, visible=False,
+            bbox=dict(
+                boxstyle="round,pad=0.45",
+                fc=ROW_COLOR[1] if self.is_dark else ROW_COLOR[0],
+                ec=self.line_color, lw=1.2,
+            ),
+        )
+
         try:
             self.figure.tight_layout()
         except Exception:
             pass
         self.canvas.draw_idle()
+
+    def _hide_tooltip(self) -> None:
+        if self._hover_idx is not None:
+            self._hover_idx = None
+            self._tooltip.set_visible(False)
+            self.canvas.draw_idle()
+
+    def _on_hover(self, event) -> None:
+        if not self._timestamps or event.inaxes != self.axis:
+            self._hide_tooltip()
+            return
+
+        xy_data = list(zip(mdates.date2num(self._timestamps), self._values))
+        xs_px, ys_px = self.axis.transData.transform(xy_data).T
+        dist = ((xs_px - event.x) ** 2 + (ys_px - event.y) ** 2) ** 0.5
+        idx = int(dist.argmin())
+
+        if dist[idx] > HOVER_RADIUS_PX:
+            self._hide_tooltip()
+            return
+        if idx == self._hover_idx:
+            return  # already showing this point - nothing to update
+        self._hover_idx = idx
+
+        ts, val = self._timestamps[idx], self._values[idx]
+        x0, x1 = self.axis.get_xlim()
+        y0, y1 = self.axis.get_ylim()
+        # flip the tooltip to whichever side of the point has more room, so it
+        # doesn't run off the edge of the chart near the borders
+        dx = 12 if mdates.date2num(ts) <= (x0 + x1) / 2 else -12
+        dy = 12 if val <= (y0 + y1) / 2 else -12
+
+        self._tooltip.xy = (mdates.date2num(ts), val)
+        self._tooltip.set_position((dx, dy))
+        self._tooltip.set_ha("left" if dx > 0 else "right")
+        self._tooltip.set_va("bottom" if dy > 0 else "top")
+        self._tooltip.set_text(f"{ts.strftime('%Y-%m-%d %H:%M')}\n{val} {self.unit}")
+        self._tooltip.set_visible(True)
+        self.canvas.draw_idle()
+
 
 class HealthTrackerApp(ctk.CTk):
     def __init__(self):
@@ -147,7 +204,7 @@ class HealthTrackerApp(ctk.CTk):
         self._build_sidebar()
         self._build_charts()
         self.refresh()
-        
+
     def _build_sidebar(self) -> None:
         sidebar = ctk.CTkFrame(self, width=320, corner_radius=0)
         sidebar.grid(row=0, column=0, sticky="nswe")
@@ -155,7 +212,7 @@ class HealthTrackerApp(ctk.CTk):
         sidebar.grid_columnconfigure(1, weight=0)
         sidebar.grid_rowconfigure(4, weight=1)
         sidebar.grid_propagate(False)
-        
+
         ctk.CTkLabel(
             sidebar, text="Health Tracker", font=ctk.CTkFont(size=21, weight="bold"),
         ).grid(row=0, column=0, padx=(20, 0), pady=(22, 0), sticky="w")
@@ -236,7 +293,7 @@ class HealthTrackerApp(ctk.CTk):
 
         self.pulse_card = ChartCard(charts, "Pulse over time", PULSE_COLOR)
         self.pulse_card.grid(row=1, column=0, sticky="nswe", pady=(10, 0))
-        
+
     def _toggle_appearance(self) -> None:
         is_dark = bool(self.appearance_switch.get())
         ctk.set_appearance_mode("dark" if is_dark else "light")

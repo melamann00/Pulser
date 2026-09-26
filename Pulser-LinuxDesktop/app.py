@@ -22,6 +22,7 @@ ZONE_GOOD = "#43a047"  # green - normal/good
 ZONE_MID = "#fb8c00"  # orange - borderline
 ZONE_BAD = "#e53935"  # red - too low / too high
 
+# Pulse zones
 ZONE_BOUNDS = [
     (0, 50, ZONE_BAD),  # too low
     (50, 60, ZONE_MID),  # borderline low
@@ -30,16 +31,23 @@ ZONE_BOUNDS = [
     (120, 300, ZONE_BAD),  # too high
 ]
 
-BP_ZONE_BOUNDS = [
+# Niepodwyzszone <120/<70, Podwyzszone 120-139/70-89, Nadcisnienie >=140/90.
+SYSTOLIC_ZONE_BOUNDS = [
     (0, 120, ZONE_GOOD),
     (120, 140, ZONE_MID),
     (140, 300, ZONE_BAD),
 ]
+DIASTOLIC_ZONE_BOUNDS = [
+    (0, 70, ZONE_GOOD),
+    (70, 90, ZONE_MID),
+    (90, 300, ZONE_BAD),
+]
 
-DEFAULT_Y_MIN = 30
-DEFAULT_Y_MAX = 150
-Y_PADDING = 10
-HOVER_RADIUS_PX = 18
+DEFAULT_Y_MIN = 30  # visible axis floor when nothing pushes it wider
+DEFAULT_Y_MAX = 150  # visible axis ceiling when nothing pushes it wider
+Y_PADDING = 10  # extra bpm/mmHg of headroom shown above/below actual readings
+HOVER_RADIUS_PX = 18  # how close (in pixels) the cursor must be to a point to show its tooltip
+
 
 class ChartCard(ctk.CTkFrame):
     def __init__(self, master, title: str, series: list, unit: str = "bpm",
@@ -47,7 +55,7 @@ class ChartCard(ctk.CTkFrame):
         super().__init__(master, corner_radius=14, **kwargs)
         self.series = series
         self.unit = unit
-        self.zone_bounds = zone_bounds if zone_bounds is not None else ZONE_BOUNDS
+        self.zone_bounds = zone_bounds or []
         self.is_dark = is_dark
         self._timestamps: list = []
         self._values: list = []
@@ -94,6 +102,13 @@ class ChartCard(ctk.CTkFrame):
             lo, hi = DEFAULT_Y_MIN, DEFAULT_Y_MAX
         return max(0, lo), hi
 
+    @staticmethod
+    def _classify(value: float, zone_bounds: list) -> str:
+        for lo, hi, color in zone_bounds:
+            if lo <= value < hi:
+                return color
+        return zone_bounds[-1][2] if value >= zone_bounds[-1][1] else zone_bounds[0][2]
+
     def _draw_zones(self, ylim: tuple, alpha: float) -> None:
         y0, y1 = ylim
         for band_lo, band_hi, color in self.zone_bounds:
@@ -122,10 +137,19 @@ class ChartCard(ctk.CTkFrame):
             for s, vals in zip(self.series, self._values):
                 self.axis.plot(
                     self._timestamps, vals,
-                    color=s["color"], linewidth=2.2,
-                    marker="o", markersize=4.5,
-                    markerfacecolor=c["bg"], markeredgecolor=s["color"],
-                    markeredgewidth=1.4, zorder=4, label=s["label"],
+                    color=s["color"], linewidth=2.2, zorder=3, label=s["label"],
+                )
+                points = [(t, v) for t, v in zip(self._timestamps, vals) if not math.isnan(v)]
+                if not points:
+                    continue
+                xs, ys = zip(*points)
+                if s.get("zone_bounds"):
+                    marker_colors = [self._classify(v, s["zone_bounds"]) for v in ys]
+                else:
+                    marker_colors = s["color"]
+                self.axis.scatter(
+                    xs, ys, s=32, facecolors=c["bg"], edgecolors=marker_colors,
+                    linewidths=1.4, zorder=4,
                 )
             self.axis.set_ylabel(self.unit, fontsize=9, color=c["text"])
             self.axis.tick_params(axis="both", labelsize=8, colors=c["text"])
@@ -195,8 +219,6 @@ class ChartCard(ctk.CTkFrame):
         ts, val = self._timestamps[idx], self._values[s_idx][idx]
         x0, x1 = self.axis.get_xlim()
         y0, y1 = self.axis.get_ylim()
-        # flip the tooltip to whichever side of the point has more room, so it
-        # doesn't run off the edge of the chart near the borders
         dx = 12 if mdates.date2num(ts) <= (x0 + x1) / 2 else -12
         dy = 12 if val <= (y0 + y1) / 2 else -12
         self._tooltip.xy = (mdates.date2num(ts), val)
@@ -214,15 +236,18 @@ class ChartCard(ctk.CTkFrame):
         self._tooltip.set_visible(True)
         self.canvas.draw_idle()
 
+
 class HealthTrackerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Health Tracker")
-        self.geometry("1280x760")
+        self.geometry("1150x760")
         self.minsize(940, 640)
+
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
         self._build_sidebar()
         self._build_charts()
         self.refresh()
@@ -234,19 +259,23 @@ class HealthTrackerApp(ctk.CTk):
         sidebar.grid_columnconfigure(1, weight=0)
         sidebar.grid_rowconfigure(4, weight=1)
         sidebar.grid_propagate(False)
+
         ctk.CTkLabel(
             sidebar, text="Health Tracker", font=ctk.CTkFont(size=21, weight="bold"),
         ).grid(row=0, column=0, padx=(20, 0), pady=(22, 0), sticky="w")
+
         self.appearance_switch = ctk.CTkSwitch(
             sidebar, text="Dark", font=ctk.CTkFont(size=12), command=self._toggle_appearance,
         )
         self.appearance_switch.grid(row=0, column=1, padx=(0, 16), pady=(22, 0), sticky="e")
         if DEFAULT_DARK_MODE:
             self.appearance_switch.select()
+
         ctk.CTkLabel(
             sidebar, text="Log a new reading", font=ctk.CTkFont(size=13),
             text_color=MUTED_TEXT,
         ).grid(row=1, column=0, columnspan=2, padx=20, pady=(2, 14), sticky="w")
+
         form = ctk.CTkFrame(sidebar, fg_color="transparent")
         form.grid(row=2, column=0, columnspan=2, padx=20, sticky="we")
         form.grid_columnconfigure((0, 1), weight=1)
@@ -260,9 +289,11 @@ class HealthTrackerApp(ctk.CTk):
         self.date_entry = ctk.CTkEntry(form, placeholder_text="YYYY-MM-DD")
         self.date_entry.insert(0, now.strftime("%Y-%m-%d"))
         self.date_entry.grid(row=1, column=0, sticky="we", padx=(0, 6), pady=(0, 12))
+
         time_row = ctk.CTkFrame(form, fg_color="transparent")
         time_row.grid(row=1, column=1, sticky="we", pady=(0, 12))
         time_row.grid_columnconfigure(0, weight=1)
+
         self.time_entry = ctk.CTkEntry(time_row, placeholder_text="HH:MM")
         self.time_entry.insert(0, now.strftime("%H:%M"))
         self.time_entry.grid(row=0, column=0, sticky="we")
@@ -288,6 +319,7 @@ class HealthTrackerApp(ctk.CTk):
         )
         self.pulse_entry = ctk.CTkEntry(form, placeholder_text="np. 70")
         self.pulse_entry.grid(row=7, column=0, columnspan=2, sticky="we", pady=(0, 12))
+
         self.add_button = ctk.CTkButton(form, text="Add reading", command=self.on_add)
         self.add_button.grid(row=8, column=0, columnspan=2, sticky="we")
 
@@ -315,9 +347,10 @@ class HealthTrackerApp(ctk.CTk):
                 {"label": "Skurczowe", "color": SYSTOLIC_COLOR},
                 {"label": "Rozkurczowe", "color": DIASTOLIC_COLOR},
             ],
-            unit="mmHg", zone_bounds=BP_ZONE_BOUNDS,
+            unit="mmHg", zone_bounds=ZONE_BOUNDS,
         )
         self.bp_card.grid(row=0, column=0, sticky="nswe", pady=(0, 10))
+
         self.pulse_card = ChartCard(
             charts, "Puls w czasie",
             series=[{"label": "Puls", "color": PULSE_COLOR}],
@@ -350,6 +383,7 @@ class HealthTrackerApp(ctk.CTk):
         except ValueError:
             self._set_status("Enter a valid date (YYYY-MM-DD) and time (HH:MM).")
             return
+
         try:
             systolic = int(systolic_str)
             diastolic = int(diastolic_str)
@@ -357,12 +391,14 @@ class HealthTrackerApp(ctk.CTk):
         except ValueError:
             self._set_status("Systolic, diastolic and pulse must be whole numbers.")
             return
+
         if not (50 <= systolic <= 260) or not (30 <= diastolic <= 200):
             self._set_status("Enter blood pressure within a realistic mmHg range.")
             return
         if not (20 <= pulse <= 250):
             self._set_status("Enter a pulse between 20 and 250 bpm.")
             return
+
         add_reading(Reading(timestamp=timestamp, systolic=systolic, diastolic=diastolic, pulse=pulse))
         self._set_status("Reading added.", ok=True)
         self.systolic_entry.delete(0, "end")
@@ -390,6 +426,7 @@ class HealthTrackerApp(ctk.CTk):
     def _refresh_history(self, readings: list) -> None:
         for widget in self.history_frame.winfo_children():
             widget.destroy()
+
         recent = list(reversed(readings))[:15]
         if not recent:
             ctk.CTkLabel(
@@ -397,10 +434,12 @@ class HealthTrackerApp(ctk.CTk):
                 text_color=MUTED_TEXT, font=ctk.CTkFont(size=12),
             ).pack(anchor="w", pady=6, padx=6)
             return
+
         for r in recent:
             row = ctk.CTkFrame(self.history_frame, fg_color=ROW_COLOR, corner_radius=8)
             row.pack(fill="x", pady=3)
             row.grid_columnconfigure(0, weight=1)
+
             if r.systolic is not None and r.diastolic is not None:
                 bp_str = f"{r.systolic}/{r.diastolic} mmHg"
             else:
@@ -409,11 +448,13 @@ class HealthTrackerApp(ctk.CTk):
             ctk.CTkLabel(
                 row, text=text, font=ctk.CTkFont(size=11), justify="left", anchor="w",
             ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+
             ctk.CTkButton(
                 row, text="\u2715", width=24, height=24, fg_color="transparent",
                 text_color=MUTED_TEXT, hover_color=ROW_HOVER,
                 command=lambda rid=r.id: self.on_delete(rid),
             ).grid(row=0, column=1, padx=(0, 6))
+
 
 if __name__ == "__main__":
     app = HealthTrackerApp()

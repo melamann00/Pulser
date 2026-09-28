@@ -6,7 +6,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from data_store import Reading, add_reading, delete_reading, load_readings
 
-DEFAULT_DARK_MODE = True  # flip to False if you'd rather the app open in light mode
+DEFAULT_DARK_MODE = True
 
 ctk.set_appearance_mode("dark" if DEFAULT_DARK_MODE else "light")
 ctk.set_default_color_theme("green")
@@ -18,20 +18,19 @@ ROW_COLOR = ("#f2f2f2", "#2b2b2b")
 ROW_HOVER = ("#e3e3e3", "#3a3a3a")
 MUTED_TEXT = ("#8a8a8a", "#9a9a9a")
 
-ZONE_GOOD = "#43a047"  # green - normal/good
-ZONE_MID = "#fb8c00"  # orange - borderline
-ZONE_BAD = "#e53935"  # red - too low / too high
+ZONE_GOOD = "#43a047"  # green
+ZONE_MID = "#fb8c00"   # orange
+ZONE_BAD = "#e53935"   # red
 
-# Pulse zones
 ZONE_BOUNDS = [
-    (0, 50, ZONE_BAD),  # too low
-    (50, 60, ZONE_MID),  # borderline low
-    (60, 100, ZONE_GOOD),  # normal resting range
-    (100, 120, ZONE_MID),  # borderline high
-    (120, 300, ZONE_BAD),  # too high
+    (0, 50, ZONE_BAD),
+    (50, 60, ZONE_MID),
+    (60, 100, ZONE_GOOD),
+    (100, 120, ZONE_MID),
+    (120, 300, ZONE_BAD),
 ]
 
-# Niepodwyzszone <120/<70, Podwyzszone 120-139/70-89, Nadcisnienie >=140/90.
+# Niepodwyższone <120/<70, Podwyższone 120-139/70-89, Nadciśnienie >=140/90.
 SYSTOLIC_ZONE_BOUNDS = [
     (0, 120, ZONE_GOOD),
     (120, 140, ZONE_MID),
@@ -42,28 +41,45 @@ DIASTOLIC_ZONE_BOUNDS = [
     (70, 90, ZONE_MID),
     (90, 300, ZONE_BAD),
 ]
+NORM_BREAKS = (0.0, 100 / 3, 200 / 3, 100.0)
+NORMALIZED_ZONE_BOUNDS = [
+    (NORM_BREAKS[0], NORM_BREAKS[1], ZONE_GOOD),
+    (NORM_BREAKS[1], NORM_BREAKS[2], ZONE_MID),
+    (NORM_BREAKS[2], NORM_BREAKS[3], ZONE_BAD),
+]
+ZONE_TICK_LABELS = ["Prawidłowe", "Podwyższone", "Nadciśnienie"]
 
-DEFAULT_Y_MIN = 30  # visible axis floor when nothing pushes it wider
-DEFAULT_Y_MAX = 150  # visible axis ceiling when nothing pushes it wider
-Y_PADDING = 10  # extra bpm/mmHg of headroom shown above/below actual readings
-HOVER_RADIUS_PX = 18  # how close (in pixels) the cursor must be to a point to show its tooltip
+DEFAULT_Y_MIN = 30
+DEFAULT_Y_MAX = 150
+Y_PADDING = 10
+HOVER_RADIUS_PX = 18
 
 
 class ChartCard(ctk.CTkFrame):
-    def __init__(self, master, title: str, series: list, unit: str = "bpm",
-                 zone_bounds: list = None, is_dark: bool = DEFAULT_DARK_MODE, **kwargs):
-        super().__init__(master, corner_radius=14, **kwargs)
+    def __init__(self, master, title: str, series: list, unit: str = "mmHg",
+                 zone_bounds: list = None, is_dark: bool = DEFAULT_DARK_MODE,
+                 normalize_zones: bool = False, y_min: float = None,
+                 y_max: float = None, **kwargs):
+        super().__init__(master, corner_radius=10, border_width=1,
+                         border_color=("#d9d9d9", "#3c3c3c"), **kwargs)
         self.series = series
         self.unit = unit
-        self.zone_bounds = zone_bounds or []
+        # Każdy wykres jest niezależny i pokazuje rzeczywiste wartości.
+        # Ciśnienie skurczowe i rozkurczowe nie są normalizowane do wspólnej skali.
+        self.normalized = bool(normalize_zones) and bool(series) and all(
+            s.get("zone_bounds") for s in series
+        )
+        self.zone_bounds = NORMALIZED_ZONE_BOUNDS if self.normalized else (zone_bounds or [])
         self.is_dark = is_dark
+        self.y_min = y_min
+        self.y_max = y_max
         self._timestamps: list = []
         self._values: list = []
         self._hover_idx = None
         ctk.CTkLabel(
             self, text=title, font=ctk.CTkFont(size=16, weight="bold"), anchor="w"
         ).pack(fill="x", padx=18, pady=(14, 4))
-        self.figure = Figure(figsize=(6, 3), dpi=100)
+        self.figure = Figure(figsize=(5, 3), dpi=100)
         self.axis = self.figure.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=14, pady=(0, 16))
@@ -94,12 +110,18 @@ class ChartCard(ctk.CTkFrame):
         self._redraw()
 
     def _compute_ylim(self) -> tuple:
-        all_vals = [v for series_vals in self._values for v in series_vals if not math.isnan(v)]
-        if all_vals:
-            lo = min(DEFAULT_Y_MIN, min(all_vals) - Y_PADDING)
-            hi = max(DEFAULT_Y_MAX, max(all_vals) + Y_PADDING)
+        if self.y_min is not None and self.y_max is not None:
+            lo, hi = float(self.y_min), float(self.y_max)
         else:
-            lo, hi = DEFAULT_Y_MIN, DEFAULT_Y_MAX
+            all_vals = [
+                v for series_vals in self._values
+                for v in series_vals if not math.isnan(v)
+            ]
+            if all_vals:
+                lo = min(DEFAULT_Y_MIN, min(all_vals) - Y_PADDING)
+                hi = max(DEFAULT_Y_MAX, max(all_vals) + Y_PADDING)
+            else:
+                lo, hi = DEFAULT_Y_MIN, DEFAULT_Y_MAX
         return max(0, lo), hi
 
     @staticmethod
@@ -108,6 +130,29 @@ class ChartCard(ctk.CTkFrame):
             if lo <= value < hi:
                 return color
         return zone_bounds[-1][2] if value >= zone_bounds[-1][1] else zone_bounds[0][2]
+
+    @staticmethod
+    def _normalize(value: float, zone_bounds: list) -> float:
+        b0, b1, b2, b3 = NORM_BREAKS
+        lo0, t1, _ = zone_bounds[0]
+        _, t2, _ = zone_bounds[1]
+        _, t3, _ = zone_bounds[-1]
+
+        if value < t1:
+            frac = (value - lo0) / (t1 - lo0) if t1 > lo0 else 0.0
+            return b0 + frac * (b1 - b0)
+        if value < t2:
+            return b1 + (value - t1) / (t2 - t1) * (b2 - b1)
+
+        span = (t3 - t2) or 1
+        return min(b3, b2 + (value - t2) / span * (b3 - b2))
+
+    def _display_vals(self, s_idx: int) -> list:
+        vals = self._values[s_idx]
+        if not self.normalized:
+            return vals
+        zb = self.series[s_idx]["zone_bounds"]
+        return [v if math.isnan(v) else self._normalize(v, zb) for v in vals]
 
     def _draw_zones(self, ylim: tuple, alpha: float) -> None:
         y0, y1 = ylim
@@ -123,9 +168,10 @@ class ChartCard(ctk.CTkFrame):
         self.canvas.get_tk_widget().configure(bg=c["bg"])
         self.axis.clear()
         self.axis.set_facecolor(c["bg"])
+
         if not self._timestamps:
             self.axis.text(
-                0.5, 0.5, "No readings yet",
+                0.5, 0.5, "Brak pomiarów",
                 ha="center", va="center", color=c["muted"], fontsize=11,
                 transform=self.axis.transAxes, zorder=5,
             )
@@ -134,24 +180,30 @@ class ChartCard(ctk.CTkFrame):
             for spine in self.axis.spines.values():
                 spine.set_visible(False)
         else:
-            for s, vals in zip(self.series, self._values):
+            for s_idx, (s, vals) in enumerate(zip(self.series, self._values)):
+                disp = self._display_vals(s_idx)
                 self.axis.plot(
-                    self._timestamps, vals,
+                    self._timestamps, disp,
                     color=s["color"], linewidth=2.2, zorder=3, label=s["label"],
                 )
-                points = [(t, v) for t, v in zip(self._timestamps, vals) if not math.isnan(v)]
+                points = [(t, d, r) for t, d, r in zip(self._timestamps, disp, vals) if not math.isnan(r)]
                 if not points:
                     continue
-                xs, ys = zip(*points)
+                xs, ys, raws = zip(*points)
                 if s.get("zone_bounds"):
-                    marker_colors = [self._classify(v, s["zone_bounds"]) for v in ys]
+                    marker_colors = [self._classify(r, s["zone_bounds"]) for r in raws]
                 else:
                     marker_colors = s["color"]
                 self.axis.scatter(
                     xs, ys, s=32, facecolors=c["bg"], edgecolors=marker_colors,
                     linewidths=1.4, zorder=4,
                 )
-            self.axis.set_ylabel(self.unit, fontsize=9, color=c["text"])
+            if self.normalized:
+                mid = [(lo + hi) / 2 for lo, hi, _ in NORMALIZED_ZONE_BOUNDS]
+                self.axis.set_yticks(mid)
+                self.axis.set_yticklabels(ZONE_TICK_LABELS)
+            else:
+                self.axis.set_ylabel(self.unit, fontsize=9, color=c["text"])
             self.axis.tick_params(axis="both", labelsize=8, colors=c["text"])
             self.axis.grid(True, axis="y", linestyle="--", linewidth=0.6, color=c["grid"], zorder=1)
             for side in ("top", "right"):
@@ -165,9 +217,11 @@ class ChartCard(ctk.CTkFrame):
                 for text in legend.get_texts():
                     text.set_color(c["text"])
 
-        ylim = self._compute_ylim()
+        ylim = (0.0, 100.0) if self.normalized else self._compute_ylim()
         self.axis.set_ylim(*ylim)
-        self._draw_zones(ylim, c["zone_alpha"])
+        if self.zone_bounds:
+            self._draw_zones(ylim, c["zone_alpha"])
+
         self._hover_idx = None
         self._tooltip = self.axis.annotate(
             "", xy=(0, 0), xytext=(12, 12), textcoords="offset points",
@@ -178,6 +232,7 @@ class ChartCard(ctk.CTkFrame):
                 ec=self.series[0]["color"], lw=1.2,
             ),
         )
+
         try:
             self.figure.tight_layout()
         except Exception:
@@ -196,12 +251,13 @@ class ChartCard(ctk.CTkFrame):
             return
 
         x_nums = mdates.date2num(self._timestamps)
-        best = None  # (distance, series_idx, point_idx)
+        best = None
         for s_idx, vals in enumerate(self._values):
+            disp = self._display_vals(s_idx)
             idxs = [i for i, v in enumerate(vals) if not math.isnan(v)]
             if not idxs:
                 continue
-            xy_data = [(x_nums[i], vals[i]) for i in idxs]
+            xy_data = [(x_nums[i], disp[i]) for i in idxs]
             xs_px, ys_px = self.axis.transData.transform(xy_data).T
             local_best = int(((xs_px - event.x) ** 2 + (ys_px - event.y) ** 2).argmin())
             dist = ((xs_px[local_best] - event.x) ** 2 + (ys_px[local_best] - event.y) ** 2) ** 0.5
@@ -216,12 +272,15 @@ class ChartCard(ctk.CTkFrame):
         self._hover_idx = (best[1], best[2])
 
         _, s_idx, idx = best
-        ts, val = self._timestamps[idx], self._values[s_idx][idx]
+        ts = self._timestamps[idx]
+        val = self._values[s_idx][idx]
+        disp_val = self._display_vals(s_idx)[idx]
         x0, x1 = self.axis.get_xlim()
         y0, y1 = self.axis.get_ylim()
         dx = 12 if mdates.date2num(ts) <= (x0 + x1) / 2 else -12
-        dy = 12 if val <= (y0 + y1) / 2 else -12
-        self._tooltip.xy = (mdates.date2num(ts), val)
+        dy = 12 if disp_val <= (y0 + y1) / 2 else -12
+
+        self._tooltip.xy = (mdates.date2num(ts), disp_val)
         self._tooltip.set_position((dx, dy))
         self._tooltip.set_ha("left" if dx > 0 else "right")
         self._tooltip.set_va("bottom" if dy > 0 else "top")
@@ -232,7 +291,9 @@ class ChartCard(ctk.CTkFrame):
         self._tooltip.set_text(text)
         bbox_patch = self._tooltip.get_bbox_patch()
         if bbox_patch is not None:
-            bbox_patch.set_edgecolor(self.series[s_idx]["color"])
+            s = self.series[s_idx]
+            edge_color = self._classify(val, s["zone_bounds"]) if s.get("zone_bounds") else s["color"]
+            bbox_patch.set_edgecolor(edge_color)
         self._tooltip.set_visible(True)
         self.canvas.draw_idle()
 
@@ -241,7 +302,7 @@ class HealthTrackerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Health Tracker")
-        self.geometry("1150x760")
+        self.geometry("1668x890")
         self.minsize(940, 640)
 
         self.grid_columnconfigure(0, weight=0)
@@ -280,10 +341,10 @@ class HealthTrackerApp(ctk.CTk):
         form.grid(row=2, column=0, columnspan=2, padx=20, sticky="we")
         form.grid_columnconfigure((0, 1), weight=1)
         now = datetime.now()
-        ctk.CTkLabel(form, text="Date", font=ctk.CTkFont(size=12)).grid(
+        ctk.CTkLabel(form, text="Data", font=ctk.CTkFont(size=12)).grid(
             row=0, column=0, sticky="w", pady=(0, 2)
         )
-        ctk.CTkLabel(form, text="Time", font=ctk.CTkFont(size=12)).grid(
+        ctk.CTkLabel(form, text="Godzina", font=ctk.CTkFont(size=12)).grid(
             row=0, column=1, sticky="w", pady=(0, 2)
         )
         self.date_entry = ctk.CTkEntry(form, placeholder_text="YYYY-MM-DD")
@@ -302,13 +363,13 @@ class HealthTrackerApp(ctk.CTk):
             time_row, text="Now", width=48, command=self.on_use_now,
         ).grid(row=0, column=1, padx=(6, 0))
 
-        ctk.CTkLabel(form, text="Tętno skurczowe (mmHg)", font=ctk.CTkFont(size=12)).grid(
+        ctk.CTkLabel(form, text="Ciśnienie skurczowe (mmHg)", font=ctk.CTkFont(size=12)).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(0, 2)
         )
         self.systolic_entry = ctk.CTkEntry(form, placeholder_text="np. 120")
         self.systolic_entry.grid(row=3, column=0, columnspan=2, sticky="we", pady=(0, 12))
 
-        ctk.CTkLabel(form, text="Tętno rozkurczowe (mmHg)", font=ctk.CTkFont(size=12)).grid(
+        ctk.CTkLabel(form, text="Ciśnienie rozkurczowe (mmHg)", font=ctk.CTkFont(size=12)).grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(0, 2)
         )
         self.diastolic_entry = ctk.CTkEntry(form, placeholder_text="np. 80")
@@ -329,39 +390,84 @@ class HealthTrackerApp(ctk.CTk):
         self.status_label.grid(row=9, column=0, columnspan=2, sticky="we", pady=(6, 0))
 
         ctk.CTkLabel(
-            sidebar, text="Recent readings", font=ctk.CTkFont(size=13, weight="bold"),
+            sidebar, text="Wcześniejsze wyniki", font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=3, column=0, columnspan=2, padx=20, pady=(14, 6), sticky="w")
 
         self.history_frame = ctk.CTkScrollableFrame(sidebar, fg_color="transparent")
         self.history_frame.grid(row=4, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="nswe")
 
     def _build_charts(self) -> None:
+        # Układ jak na screenie:
+        # [ osobny wykres skurczowego ] [ osobny wykres rozkurczowego ]
+        # [                 szeroki wykres pulsu                    ]
         charts = ctk.CTkFrame(self, fg_color="transparent")
-        charts.grid(row=0, column=1, sticky="nswe", padx=20, pady=20)
-        charts.grid_rowconfigure((0, 1), weight=1)
-        charts.grid_columnconfigure(0, weight=1)
+        charts.grid(row=0, column=1, sticky="nswe", padx=16, pady=16)
 
-        self.bp_card = ChartCard(
-            charts, "Tętno skurczowe i rozkurczowe w czasie",
-            series=[
-                {"label": "Skurczowe", "color": SYSTOLIC_COLOR},
-                {"label": "Rozkurczowe", "color": DIASTOLIC_COLOR},
-            ],
-            unit="mmHg", zone_bounds=ZONE_BOUNDS,
+        charts.grid_columnconfigure(0, weight=1, uniform="pressure_charts")
+        charts.grid_columnconfigure(1, weight=1, uniform="pressure_charts")
+        charts.grid_rowconfigure(0, weight=1, minsize=300)
+        charts.grid_rowconfigure(1, weight=1, minsize=300)
+
+        # OSOBNY WYKRES: ciśnienie skurczowe
+        self.systolic_card = ChartCard(
+            charts,
+            "Ciśnienie skurczowe",
+            series=[{
+                "label": "Skurczowe",
+                "color": SYSTOLIC_COLOR,
+                "zone_bounds": SYSTOLIC_ZONE_BOUNDS,
+            }],
+            unit="mmHg",
+            zone_bounds=SYSTOLIC_ZONE_BOUNDS,
+            normalize_zones=False,
+            y_min=50,
+            y_max=190,
         )
-        self.bp_card.grid(row=0, column=0, sticky="nswe", pady=(0, 10))
+        self.systolic_card.grid(
+            row=0, column=0, sticky="nswe",
+            padx=(0, 6), pady=(0, 6)
+        )
 
+        # OSOBNY WYKRES: ciśnienie rozkurczowe
+        self.diastolic_card = ChartCard(
+            charts,
+            "Ciśnienie rozkurczowe",
+            series=[{
+                "label": "Rozkurczowe",
+                "color": DIASTOLIC_COLOR,
+                "zone_bounds": DIASTOLIC_ZONE_BOUNDS,
+            }],
+            unit="mmHg",
+            zone_bounds=DIASTOLIC_ZONE_BOUNDS,
+            normalize_zones=False,
+            y_min=30,
+            y_max=120,
+        )
+        self.diastolic_card.grid(
+            row=0, column=1, sticky="nswe",
+            padx=(6, 0), pady=(0, 6)
+        )
+
+        # SZEROKI DOLNY WYKRES: puls
         self.pulse_card = ChartCard(
-            charts, "Puls w czasie",
+            charts,
+            "Wykres Pulsu",
             series=[{"label": "Puls", "color": PULSE_COLOR}],
-            unit="bpm", zone_bounds=ZONE_BOUNDS,
+            unit="bpm",
+            zone_bounds=ZONE_BOUNDS,
+            y_min=30,
+            y_max=150,
         )
-        self.pulse_card.grid(row=1, column=0, sticky="nswe", pady=(10, 0))
+        self.pulse_card.grid(
+            row=1, column=0, columnspan=2,
+            sticky="nswe", padx=0, pady=(6, 0)
+        )
 
     def _toggle_appearance(self) -> None:
         is_dark = bool(self.appearance_switch.get())
         ctk.set_appearance_mode("dark" if is_dark else "light")
-        self.bp_card.set_dark(is_dark)
+        self.systolic_card.set_dark(is_dark)
+        self.diastolic_card.set_dark(is_dark)
         self.pulse_card.set_dark(is_dark)
 
     def on_use_now(self) -> None:
@@ -419,7 +525,9 @@ class HealthTrackerApp(ctk.CTk):
         systolic_vals = [r.systolic if r.systolic is not None else float("nan") for r in readings]
         diastolic_vals = [r.diastolic if r.diastolic is not None else float("nan") for r in readings]
         pulse_vals = [r.pulse for r in readings]
-        self.bp_card.update_data(timestamps, [systolic_vals, diastolic_vals])
+
+        self.systolic_card.update_data(timestamps, [systolic_vals])
+        self.diastolic_card.update_data(timestamps, [diastolic_vals])
         self.pulse_card.update_data(timestamps, [pulse_vals])
         self._refresh_history(readings)
 
@@ -444,7 +552,7 @@ class HealthTrackerApp(ctk.CTk):
                 bp_str = f"{r.systolic}/{r.diastolic} mmHg"
             else:
                 bp_str = "-/- mmHg"
-            text = f"{r.timestamp.strftime('%Y-%m-%d %H:%M')}\n{bp_str}  \u00b7  Puls {r.pulse} bpm"
+            text = f"{r.timestamp.strftime('%Y-%m-%d %H:%M')}\n{bp_str}  ·  Puls {r.pulse} bpm"
             ctk.CTkLabel(
                 row, text=text, font=ctk.CTkFont(size=11), justify="left", anchor="w",
             ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
